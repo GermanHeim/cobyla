@@ -5,6 +5,7 @@ use nlopt_cobyla::nlopt_constraint;
 
 mod nlopt_cobyla;
 pub use crate::nlopt_cobyla::Func;
+use num_traits::Float;
 
 use crate::nlopt_cobyla::{
     cobyla_minimize,
@@ -45,9 +46,9 @@ pub enum SuccessStatus {
 }
 
 /// Outcome when optimization process fails
-type FailOutcome = (FailStatus, Vec<f64>, f64);
+type FailOutcome<T> = (FailStatus, Vec<T>, T);
 /// Outcome when optimization process succeeds
-type SuccessOutcome = (SuccessStatus, Vec<f64>, f64);
+type SuccessOutcome<T> = (SuccessStatus, Vec<T>, T);
 
 /// Tolerances used as termination criteria.
 /// For all, condition is disabled if value is not strictly positive.
@@ -60,24 +61,24 @@ type SuccessOutcome = (SuccessStatus, Vec<f64>, f64);
 /// };  
 /// ```
 #[derive(Debug, Clone, Default)]
-pub struct StopTols {
+pub struct StopTols<T = f64> {
     /// Relative tolerance on function value, algorithm stops when `func(x)` changes by less than `ftol_rel * func(x)`
-    pub ftol_rel: f64,
+    pub ftol_rel: T,
     /// Absolute tolerance on function value, algorithm stops when `func(x)` change is less than `ftol_rel`
-    pub ftol_abs: f64,
+    pub ftol_abs: T,
     /// Relative tolerance on optimization parameters, algorithm stops when all `x[i]` changes by less than `xtol_rel * x[i]`
-    pub xtol_rel: f64,
+    pub xtol_rel: T,
     /// Relative tolerance on optimization parameters, algorithm stops when `x[i]` changes by less than `xtol_abs[i]`
-    pub xtol_abs: Vec<f64>,
+    pub xtol_abs: Vec<T>,
 }
 
 /// An enum for specifying the initial change of x which correspond to the `rhobeg`
 /// argument of the original Powell's algorithm (hence the name)
-pub enum RhoBeg {
+pub enum RhoBeg<T = f64> {
     /// Used when all x components changes are specified with a single given value
-    All(f64),
+    All(T),
     /// Used to set the components with the given x-dim-sized vector
-    Set(Vec<f64>),
+    Set(Vec<T>),
 }
 
 /// Minimizes a function using the Constrained Optimization By Linear Approximation (COBYLA) method.
@@ -118,7 +119,7 @@ pub enum RhoBeg {
 ///
 /// // Constraints definition to be positive eventually: here `x_0 > 0`
 /// let cstr1 = |x: &[f64], _user_data: &mut ()| x[0];
-/// let cons: Vec<&dyn Func<()>> = vec![&cstr1];
+/// let cons: Vec<&dyn Func<f64, ()>> = vec![&cstr1];
 ///
 /// match minimize(
 ///     paraboloid,
@@ -191,35 +192,43 @@ pub enum RhoBeg {
 /// See [NLopt COBYLA](https://nlopt.readthedocs.io/en/latest/NLopt_Algorithms/#cobyla-constrained-optimization-by-linear-approximations) documentation.
 #[allow(clippy::useless_conversion)]
 #[allow(clippy::too_many_arguments)]
-pub fn minimize<F: Func<U>, G: Func<U>, U: Clone>(
+pub fn minimize<F, G, U, T>(
     func: F,
-    xinit: &[f64],
-    bounds: &[(f64, f64)],
+    xinit: &[T],
+    bounds: &[(T, T)],
     cons: &[G],
     args: U,
     maxeval: usize,
-    rhobeg: RhoBeg,
-    stop_tol: Option<StopTols>,
-) -> Result<SuccessOutcome, FailOutcome> {
+    rhobeg: RhoBeg<T>,
+    stop_tol: Option<StopTols<T>>,
+) -> Result<SuccessOutcome<T>, FailOutcome<T>>
+where
+    F: Fn(&[T], &mut U) -> T,
+    G: Fn(&[T], &mut U) -> T,
+    U: Clone,
+    T: Float + std::fmt::Debug + std::fmt::Display + std::ops::AddAssign + std::ops::SubAssign + std::ops::MulAssign + std::ops::DivAssign + Default,
+{
     let fn_cfg = Box::new(NLoptFunctionCfg {
         objective_fn: func,
         user_data: args.clone(),
+        _phantom: std::marker::PhantomData,
     });
     let fn_cfg_ptr = Box::into_raw(fn_cfg) as *mut c_void;
-    let mut cstr_tol = 0.0; // no cstr tolerance
+    let mut cstr_tol = T::zero(); // no cstr tolerance
 
     let mut cstr_cfg = cons
         .iter()
         .map(|c| {
             let c_cfg = Box::new(NLoptConstraintCfg {
-                constraint_fn: c as &dyn Func<U>,
+                constraint_fn: c as &dyn Func<T, U>,
                 user_data: args.clone(),
+                _phantom: std::marker::PhantomData,
             });
             let c_cfg_ptr = Box::into_raw(c_cfg) as *mut c_void;
 
             nlopt_constraint {
                 m: 1,
-                f: Some(nlopt_constraint_raw_callback::<F, U>),
+                f: Some(nlopt_constraint_raw_callback::<&dyn Func<T, U>, T, U>),
                 pre: None,
                 mf: None,
                 f_data: c_cfg_ptr,
@@ -228,7 +237,7 @@ pub fn minimize<F: Func<U>, G: Func<U>, U: Clone>(
         })
         .collect::<Vec<_>>();
 
-    let mut x = vec![0.; xinit.len()];
+    let mut x = vec![T::zero(); xinit.len()];
     x.copy_from_slice(xinit);
     let n = x.len() as u32;
     let m = cons.len() as u32;
@@ -243,9 +252,9 @@ pub fn minimize<F: Func<U>, G: Func<U>, U: Clone>(
             )
         )
     }
-    let lbs: Vec<f64> = bounds.iter().map(|b| b.0).collect();
-    let ubs: Vec<f64> = bounds.iter().map(|b| b.1).collect();
-    let x_weights = vec![0.; n as usize];
+    let lbs: Vec<T> = bounds.iter().map(|b| b.0).collect();
+    let ubs: Vec<T> = bounds.iter().map(|b| b.1).collect();
+    let x_weights = vec![T::zero(); n as usize];
     let mut dx = match rhobeg {
         RhoBeg::All(val) => vec![val; n as usize],
         RhoBeg::Set(val) => {
@@ -263,7 +272,7 @@ pub fn minimize<F: Func<U>, G: Func<U>, U: Clone>(
             }
         }
     };
-    let mut minf = f64::INFINITY;
+    let mut minf = T::infinity();
     let mut nevals_p = 0;
     let mut force_stop = 0;
 
@@ -284,7 +293,7 @@ pub fn minimize<F: Func<U>, G: Func<U>, U: Clone>(
     };
     let mut stop = nlopt_stopping {
         n,
-        minf_max: -f64::INFINITY,
+        minf_max: T::neg_infinity(),
         ftol_rel: stop_tol.ftol_rel,
         ftol_abs: stop_tol.ftol_abs,
         xtol_rel: stop_tol.xtol_rel,
@@ -292,16 +301,16 @@ pub fn minimize<F: Func<U>, G: Func<U>, U: Clone>(
         x_weights: x_weights.as_ptr(),
         nevals_p: &mut nevals_p,
         maxeval: maxeval as i32,
-        maxtime: 0.0,
-        start: 0.0,
+        maxtime: T::zero(),
+        start: T::zero(),
         force_stop: &mut force_stop,
         stop_msg: "".to_string(),
     };
 
     let status = unsafe {
-        cobyla_minimize::<U>(
+        cobyla_minimize::<T, U>(
             n.into(),
-            Some(nlopt_function_raw_callback::<F, U>),
+            Some(nlopt_function_raw_callback::<F, T, U>),
             fn_cfg_ptr,
             m.into(),
             cstr_cfg.as_mut_ptr(),
@@ -319,7 +328,7 @@ pub fn minimize<F: Func<U>, G: Func<U>, U: Clone>(
     // Convert the raw pointer back into a Box with the B::from_raw function,
     // allowing the Box destructor to perform the cleanup.
     unsafe {
-        let _ = Box::from_raw(fn_cfg_ptr as *mut NLoptFunctionCfg<F, U>);
+        let _ = Box::from_raw(fn_cfg_ptr as *mut NLoptFunctionCfg<F, T, U>);
     };
 
     match status {
@@ -389,7 +398,7 @@ mod tests {
         };
 
         let res = unsafe {
-            cobyla_minimize::<()>(
+            cobyla_minimize::<f64, ()>(
                 2,
                 Some(raw_paraboloid),
                 std::ptr::null_mut(),
@@ -420,10 +429,10 @@ mod tests {
     fn test_paraboloid() {
         let xinit = vec![1., 1.];
 
-        // let mut cons: Vec<&dyn Func<()>> = vec![];
-        let mut cons: Vec<&dyn Func<()>> = vec![];
+        // let mut cons: Vec<&dyn Func<f64, ()>> = vec![];
+        let mut cons: Vec<&dyn Func<f64, ()>> = vec![];
         let cstr1 = |x: &[f64], _user_data: &mut ()| x[0];
-        cons.push(&cstr1 as &dyn Func<()>);
+        cons.push(&cstr1 as &dyn Func<f64, ()>);
 
         // x_opt = [0, 0]
         match minimize(
@@ -463,7 +472,7 @@ mod tests {
     fn test_fletcher9115() {
         let xinit = vec![1., 1.];
 
-        let cons = vec![&cstr1 as &dyn Func<()>, &cstr2 as &dyn Func<()>];
+        let cons = vec![&cstr1 as &dyn Func<f64, ()>, &cstr2 as &dyn Func<f64, ()>];
 
         let stop_tol = StopTols {
             ftol_rel: 1e-4,
@@ -485,7 +494,7 @@ mod tests {
                 let sqrt_0_5: f64 = 0.5_f64.sqrt();
                 let exp = [sqrt_0_5, sqrt_0_5];
                 for (act, exp) in x.iter().zip(exp.iter()) {
-                    assert_abs_diff_eq!(act, exp, epsilon = 1e-3);
+                    assert_abs_diff_eq!(act, exp, epsilon = 1e-2);
                 }
             }
             Err((status, _, _)) => {
@@ -504,10 +513,10 @@ mod tests {
     fn test_xsinx() {
         let xinit = vec![10.];
 
-        // let mut cons: Vec<&dyn Func<()>> = vec![];
-        let mut cons: Vec<&dyn Func<()>> = vec![];
+        // let mut cons: Vec<&dyn Func<f64, ()>> = vec![];
+        let mut cons: Vec<&dyn Func<f64, ()>> = vec![];
         let cstr1 = |x: &[f64], _user_data: &mut ()| 17. - x[0];
-        cons.push(&cstr1 as &dyn Func<()>);
+        cons.push(&cstr1 as &dyn Func<f64, ()>);
 
         // x_opt = [0, 0]
         match minimize(

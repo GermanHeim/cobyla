@@ -27,7 +27,7 @@ fn main() {
     let xinit = vec![1., 1.];
 
     // Define a constraint: x0 > 0
-    let mut cons: Vec<&dyn Func<()>> = vec![];
+    let mut cons: Vec<&dyn Func<f64, ()>> = vec![];
     let cstr1 = |x: &[f64], _u: &mut ()| x[0];
     cons.push(&cstr1);
 

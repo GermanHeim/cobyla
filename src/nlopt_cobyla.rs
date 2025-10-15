@@ -22,16 +22,19 @@
 
 use std::convert::TryFrom;
 use std::time::{SystemTime, UNIX_EPOCH};
-
+use num_traits::Float;
 use std::slice;
 
-pub(crate) fn nlopt_function_raw_callback<F: Func<T>, T>(
+pub(crate) fn nlopt_function_raw_callback<F, T, U>(
     n: libc::c_uint,
-    x: *const f64,
-    _g: *mut f64,
+    x: *const T,
+    _g: *mut T,
     params: *mut libc::c_void,
-) -> f64 {
-    // prepare args
+) -> T
+where
+    F: Fn(&[T], &mut U) -> T,
+    T: Float,
+{
     let argument = unsafe { slice::from_raw_parts(x, n as usize) };
     // let gradient = if g.is_null() {
     //     None
@@ -40,39 +43,53 @@ pub(crate) fn nlopt_function_raw_callback<F: Func<T>, T>(
     // };
 
     // recover FunctionCfg object from supplied params and call
-    let f = unsafe { &mut *(params as *mut NLoptFunctionCfg<F, T>) };
+    let f = unsafe { &mut *(params as *mut NLoptFunctionCfg<F, T, U>) };
     let res = (f.objective_fn)(argument, &mut f.user_data);
     #[allow(forgetting_references)]
     std::mem::forget(f);
     res
 }
 
-pub(crate) fn nlopt_constraint_raw_callback<F: Func<T>, T>(
+pub(crate) fn nlopt_constraint_raw_callback<F, T, U>(
     n: libc::c_uint,
-    x: *const f64,
-    _g: *mut f64,
+    x: *const T,
+    _g: *mut T,
     params: *mut libc::c_void,
-) -> f64 {
-    let f = unsafe { &mut *(params as *mut NLoptConstraintCfg<F, T>) };
-    let argument = unsafe { slice::from_raw_parts(x, n as usize) };
+) -> T
+where
+    F: Fn(&[T], &mut U) -> T,
+    T: Float,
+{
     // let gradient = if g.is_null() {
     //     None
     // } else {
     //     Some(unsafe { slice::from_raw_parts_mut(g, n as usize) })
     // };
     // (f.constraint_fn)(argument, gradient, &mut f.user_data)
+    let f = unsafe { &mut *(params as *mut NLoptConstraintCfg<F, T, U>) };
+    let argument = unsafe { slice::from_raw_parts(x, n as usize) };
     (f.constraint_fn)(argument, &mut f.user_data)
 }
 
 /// Packs an objective function with a user defined parameter set of type `T`.
-pub(crate) struct NLoptFunctionCfg<F: Func<T>, T> {
+pub(crate) struct NLoptFunctionCfg<F, T, U>
+where
+    F: Fn(&[T], &mut U) -> T,
+    T: Float,
+{
     pub objective_fn: F,
-    pub user_data: T,
+    pub user_data: U,
+    pub(crate) _phantom: std::marker::PhantomData<T>,
 }
 
-pub(crate) struct NLoptConstraintCfg<F: Func<T>, T> {
+pub(crate) struct NLoptConstraintCfg<F, T, U>
+where
+    F: Fn(&[T], &mut U) -> T,
+    T: Float,
+{
     pub constraint_fn: F,
-    pub user_data: T,
+    pub user_data: U,
+    pub(crate) _phantom: std::marker::PhantomData<T>,
 }
 
 /// A trait representing objective and constraints functions.
@@ -81,8 +98,12 @@ pub(crate) struct NLoptConstraintCfg<F: Func<T>, T> {
 ///
 /// * `x` - `n`-dimensional array
 /// * `user_data` - user defined data for objective and constraint functions
-pub trait Func<U>: Fn(&[f64], &mut U) -> f64 {}
-impl<T, U> Func<U> for T where T: Fn(&[f64], &mut U) -> f64 {}
+pub trait Func<T, U>: Fn(&[T], &mut U) -> T where T: Float {}
+impl<F, T, U> Func<T, U> for F
+where
+    F: Fn(&[T], &mut U) -> T,
+    T: Float,
+{}
 
 enum Io {
     stderr,
@@ -173,30 +194,30 @@ type va_list = __builtin_va_list;
 // pub type _IO_lock_t = ();
 // pub type FILE = _IO_FILE;
 
-type nlopt_func = Option<
+type nlopt_func<T> = Option<
     fn(
         libc::c_uint,
-        *const libc::c_double,
-        *mut libc::c_double,
+        *const T,
+        *mut T,
         *mut libc::c_void,
-    ) -> libc::c_double,
+    ) -> T,
 >;
-type nlopt_mfunc = Option<
+type nlopt_mfunc<T> = Option<
     unsafe fn(
         libc::c_uint,
-        *mut libc::c_double,
+        *mut T,
         libc::c_uint,
-        *const libc::c_double,
-        *mut libc::c_double,
+        *const T,
+        *mut T,
         *mut libc::c_void,
     ) -> (),
 >;
-type nlopt_precond = Option<
+type nlopt_precond<T> = Option<
     unsafe fn(
         libc::c_uint,
-        *const libc::c_double,
-        *const libc::c_double,
-        *mut libc::c_double,
+        *const T,
+        *const T,
+        *mut T,
         *mut libc::c_void,
     ) -> (),
 >;
@@ -216,55 +237,55 @@ const NLOPT_INVALID_ARGS: nlopt_result = -2;
 const NLOPT_FAILURE: nlopt_result = -1;
 #[derive(Clone)]
 #[repr(C)]
-pub(crate) struct nlopt_stopping {
+pub(crate) struct nlopt_stopping<T> {
     pub n: libc::c_uint,
-    pub minf_max: libc::c_double,
-    pub ftol_rel: libc::c_double,
-    pub ftol_abs: libc::c_double,
-    pub xtol_rel: libc::c_double,
-    pub xtol_abs: *const libc::c_double,
-    pub x_weights: *const libc::c_double,
+    pub minf_max: T,
+    pub ftol_rel: T,
+    pub ftol_abs: T,
+    pub xtol_rel: T,
+    pub xtol_abs: *const T,
+    pub x_weights: *const T,
     pub nevals_p: *mut libc::c_int,
     pub maxeval: libc::c_int,
-    pub maxtime: libc::c_double,
-    pub start: libc::c_double,
+    pub maxtime: T,
+    pub start: T,
     pub force_stop: *mut libc::c_int,
     pub stop_msg: String,
 }
 #[derive(Copy, Clone)]
 #[repr(C)]
-pub(crate) struct nlopt_constraint {
+pub(crate) struct nlopt_constraint<T> {
     pub m: libc::c_uint,
-    pub f: nlopt_func,
-    pub mf: nlopt_mfunc,
-    pub pre: nlopt_precond,
+    pub f: nlopt_func<T>,
+    pub mf: nlopt_mfunc<T>,
+    pub pre: nlopt_precond<T>,
     pub f_data: *mut libc::c_void,
-    pub tol: *mut libc::c_double,
+    pub tol: *mut T,
 }
 #[derive(Copy, Clone)]
 #[repr(C)]
-struct func_wrap_state {
-    pub f: nlopt_func,
+struct func_wrap_state<T> {
+    pub f: nlopt_func<T>,
     pub f_data: *mut libc::c_void,
     pub m_orig: libc::c_uint,
-    pub fc: *mut nlopt_constraint,
+    pub fc: *mut nlopt_constraint<T>,
     pub p: libc::c_uint,
-    pub h: *mut nlopt_constraint,
-    pub xtmp: *mut libc::c_double,
-    pub lb: *mut libc::c_double,
-    pub ub: *mut libc::c_double,
-    pub con_tol: *mut libc::c_double,
-    pub scale: *mut libc::c_double,
-    pub stop: *mut nlopt_stopping,
+    pub h: *mut nlopt_constraint<T>,
+    pub xtmp: *mut T,
+    pub lb: *mut T,
+    pub ub: *mut T,
+    pub con_tol: *mut T,
+    pub scale: *mut T,
+    pub stop: *mut nlopt_stopping<T>,
 }
 const COBYLA_MSG_NONE: C2RustUnnamed = 0;
-type cobyla_function = unsafe fn(
+type cobyla_function<T> = unsafe fn(
     libc::c_int,
     libc::c_int,
-    *mut libc::c_double,
-    *mut libc::c_double,
-    *mut libc::c_double,
-    *mut func_wrap_state,
+    *mut T,
+    *mut T,
+    *mut T,
+    *mut func_wrap_state<T>,
 ) -> libc::c_int;
 type uint32_t = __uint32_t;
 type C2RustUnnamed = libc::c_uint;
@@ -284,7 +305,6 @@ unsafe fn nlopt_time_seed() -> libc::c_ulong {
     since_the_epoch.as_millis() as libc::c_ulong
 }
 
-unsafe fn nlopt_seconds() -> libc::c_double {
     // static mut start_inited: libc::c_int = 0 as libc::c_int;
     // static mut start: libc::timeval = libc::timeval {
     //     tv_sec: 0,
@@ -301,6 +321,7 @@ unsafe fn nlopt_seconds() -> libc::c_double {
     // libc::gettimeofday(&mut tv, 0 as *mut libc::timezone);
     // return (tv.tv_sec - start.tv_sec) as libc::c_double
     //     + 1.0e-6f64 * (tv.tv_usec - start.tv_usec) as libc::c_double;
+unsafe fn nlopt_seconds<T: Float>() -> T {
     static mut start_inited: bool = false;
     static mut start: SystemTime = UNIX_EPOCH;
     if !start_inited {
@@ -308,32 +329,32 @@ unsafe fn nlopt_seconds() -> libc::c_double {
         start = SystemTime::now();
     }
     #[allow(static_mut_refs)]
-    start
+    T::from(start
         .duration_since(UNIX_EPOCH)
         .expect("Time flies")
-        .as_secs_f64()
+        .as_secs_f64()).unwrap()
 }
-unsafe fn sc(
-    mut x: libc::c_double,
-    mut smin: libc::c_double,
-    mut smax: libc::c_double,
-) -> libc::c_double {
+unsafe fn sc<T: Float>(
+    mut x: T,
+    mut smin: T,
+    mut smax: T,
+) -> T {
     return smin + x * (smax - smin);
 }
-unsafe fn vector_norm(
+unsafe fn vector_norm<T: Float>(
     mut n: libc::c_uint,
-    mut vec: *const libc::c_double,
-    mut w: *const libc::c_double,
-    mut scale_min: *const libc::c_double,
-    mut scale_max: *const libc::c_double,
-) -> libc::c_double {
+    mut vec: *const T,
+    mut w: *const T,
+    mut scale_min: *const T,
+    mut scale_max: *const T,
+) -> T {
     let mut i: libc::c_uint = 0;
-    let mut ret: libc::c_double = 0 as libc::c_int as libc::c_double;
+    let mut ret: T = T::zero();
     if !scale_min.is_null() && !scale_max.is_null() {
         if !w.is_null() {
             i = 0 as libc::c_int as libc::c_uint;
             while i < n {
-                ret += *w.offset(i as isize)
+                ret = ret + *w.offset(i as isize)
                     * (sc(
                         *vec.offset(i as isize),
                         *scale_min.offset(i as isize),
@@ -345,7 +366,7 @@ unsafe fn vector_norm(
         } else {
             i = 0 as libc::c_int as libc::c_uint;
             while i < n {
-                ret += (sc(
+                ret = ret + (sc(
                     *vec.offset(i as isize),
                     *scale_min.offset(i as isize),
                     *scale_max.offset(i as isize),
@@ -357,33 +378,33 @@ unsafe fn vector_norm(
     } else if !w.is_null() {
         i = 0 as libc::c_int as libc::c_uint;
         while i < n {
-            ret += *w.offset(i as isize) * (*vec.offset(i as isize)).abs();
+            ret = ret + *w.offset(i as isize) * (*vec.offset(i as isize)).abs();
             i = i.wrapping_add(1);
         }
     } else {
         i = 0 as libc::c_int as libc::c_uint;
         while i < n {
-            ret += (*vec.offset(i as isize)).abs();
+            ret = ret + (*vec.offset(i as isize)).abs();
             i = i.wrapping_add(1);
         }
     }
     return ret;
 }
-unsafe fn diff_norm(
+unsafe fn diff_norm<T: Float>(
     mut n: libc::c_uint,
-    mut x: *const libc::c_double,
-    mut oldx: *const libc::c_double,
-    mut w: *const libc::c_double,
-    mut scale_min: *const libc::c_double,
-    mut scale_max: *const libc::c_double,
-) -> libc::c_double {
+    mut x: *const T,
+    mut oldx: *const T,
+    mut w: *const T,
+    mut scale_min: *const T,
+    mut scale_max: *const T,
+) -> T {
     let mut i: libc::c_uint = 0;
-    let mut ret: libc::c_double = 0 as libc::c_int as libc::c_double;
+    let mut ret: T = T::zero();
     if !scale_min.is_null() && !scale_max.is_null() {
         if !w.is_null() {
             i = 0 as libc::c_int as libc::c_uint;
             while i < n {
-                ret += *w.offset(i as isize)
+                ret = ret + *w.offset(i as isize)
                     * (sc(
                         *x.offset(i as isize),
                         *scale_min.offset(i as isize),
@@ -399,7 +420,7 @@ unsafe fn diff_norm(
         } else {
             i = 0 as libc::c_int as libc::c_uint;
             while i < n {
-                ret += (sc(
+                ret = ret + (sc(
                     *x.offset(i as isize),
                     *scale_min.offset(i as isize),
                     *scale_max.offset(i as isize),
@@ -415,52 +436,52 @@ unsafe fn diff_norm(
     } else if !w.is_null() {
         i = 0 as libc::c_int as libc::c_uint;
         while i < n {
-            ret += *w.offset(i as isize) * (*x.offset(i as isize) - *oldx.offset(i as isize)).abs();
+            ret = ret + *w.offset(i as isize) * (*x.offset(i as isize) - *oldx.offset(i as isize)).abs();
             i = i.wrapping_add(1);
         }
     } else {
         i = 0 as libc::c_int as libc::c_uint;
         while i < n {
-            ret += (*x.offset(i as isize) - *oldx.offset(i as isize)).abs();
+            ret = ret + (*x.offset(i as isize) - *oldx.offset(i as isize)).abs();
             i = i.wrapping_add(1);
         }
     }
     return ret;
 }
-unsafe fn relstop(
-    mut vold: libc::c_double,
-    mut vnew: libc::c_double,
-    mut reltol: libc::c_double,
-    mut abstol: libc::c_double,
+unsafe fn relstop<T: Float>(
+    mut vold: T,
+    mut vnew: T,
+    mut reltol: T,
+    mut abstol: T,
 ) -> libc::c_int {
-    if nlopt_isinf(vold) != 0 {
+    if vold.is_infinite() {
         return 0 as libc::c_int;
     }
     return ((vnew - vold).abs() < abstol
-        || (vnew - vold).abs() < reltol * ((vnew).abs() + (vold)).abs() * 0.5f64
-        || reltol > 0 as libc::c_int as libc::c_double && vnew == vold) as libc::c_int;
+        || (vnew - vold).abs() < reltol * ((vnew).abs() + (vold).abs()) * T::from(0.5).unwrap()
+        || reltol > T::zero() && vnew == vold) as libc::c_int;
 }
 
-unsafe fn nlopt_stop_ftol(
-    mut s: *const nlopt_stopping,
-    mut f: libc::c_double,
-    mut oldf: libc::c_double,
+unsafe fn nlopt_stop_ftol<T: Float>(
+    mut s: *const nlopt_stopping<T>,
+    mut f: T,
+    mut oldf: T,
 ) -> libc::c_int {
     return relstop(oldf, f, (*s).ftol_rel, (*s).ftol_abs);
 }
 
-unsafe fn nlopt_stop_f(
-    mut s: *const nlopt_stopping,
-    mut f: libc::c_double,
-    mut oldf: libc::c_double,
+unsafe fn nlopt_stop_f<T: Float>(
+    mut s: *const nlopt_stopping<T>,
+    mut f: T,
+    mut oldf: T,
 ) -> libc::c_int {
     return (f <= (*s).minf_max || nlopt_stop_ftol(s, f, oldf) != 0) as libc::c_int;
 }
 
-unsafe fn nlopt_stop_x(
-    mut s: *const nlopt_stopping,
-    mut x: *const libc::c_double,
-    mut oldx: *const libc::c_double,
+unsafe fn nlopt_stop_x<T: Float>(
+    mut s: *const nlopt_stopping<T>,
+    mut x: *const T,
+    mut oldx: *const T,
 ) -> libc::c_int {
     let mut i: libc::c_uint = 0;
     if diff_norm(
@@ -468,15 +489,15 @@ unsafe fn nlopt_stop_x(
         x,
         oldx,
         (*s).x_weights,
-        0 as *const libc::c_double,
-        0 as *const libc::c_double,
+        0 as *const T,
+        0 as *const T,
     ) < (*s).xtol_rel
         * vector_norm(
             (*s).n,
             x,
             (*s).x_weights,
-            0 as *const libc::c_double,
-            0 as *const libc::c_double,
+            0 as *const T,
+            0 as *const T,
         )
     {
         return 1 as libc::c_int;
@@ -496,25 +517,25 @@ unsafe fn nlopt_stop_x(
     return 1 as libc::c_int;
 }
 
-unsafe fn nlopt_stop_dx(
-    mut s: *const nlopt_stopping,
-    mut x: *const libc::c_double,
-    mut dx: *const libc::c_double,
+unsafe fn nlopt_stop_dx<T: Float>(
+    mut s: *const nlopt_stopping<T>,
+    mut x: *const T,
+    mut dx: *const T,
 ) -> libc::c_int {
     let mut i: libc::c_uint = 0;
     if vector_norm(
         (*s).n,
         dx,
         (*s).x_weights,
-        0 as *const libc::c_double,
-        0 as *const libc::c_double,
+        0 as *const T,
+        0 as *const T,
     ) < (*s).xtol_rel
         * vector_norm(
             (*s).n,
             x,
             (*s).x_weights,
-            0 as *const libc::c_double,
-            0 as *const libc::c_double,
+            0 as *const T,
+            0 as *const T,
         )
     {
         return 1 as libc::c_int;
@@ -532,12 +553,12 @@ unsafe fn nlopt_stop_dx(
     return 1 as libc::c_int;
 }
 
-unsafe fn nlopt_stop_xs(
-    mut s: *const nlopt_stopping,
-    mut xs: *const libc::c_double,
-    mut oldxs: *const libc::c_double,
-    mut scale_min: *const libc::c_double,
-    mut scale_max: *const libc::c_double,
+unsafe fn nlopt_stop_xs<T: Float>(
+    mut s: *const nlopt_stopping<T>,
+    mut xs: *const T,
+    mut oldxs: *const T,
+    mut scale_min: *const T,
+    mut scale_max: *const T,
 ) -> libc::c_int {
     let mut i: libc::c_uint = 0;
     if diff_norm((*s).n, xs, oldxs, (*s).x_weights, scale_min, scale_max)
@@ -569,49 +590,44 @@ unsafe fn nlopt_stop_xs(
     return 1 as libc::c_int;
 }
 
-unsafe fn nlopt_isinf(mut x: libc::c_double) -> libc::c_int {
-    return ((x).abs() >= f64::INFINITY * 0.99f64
-        || if x.is_infinite() {
-            if x.is_sign_positive() { 1 } else { -1 }
-        } else {
-            0
-        } != 0) as libc::c_int;
+unsafe fn nlopt_isinf<T: Float>(x: T) -> libc::c_int {
+    x.is_infinite() as libc::c_int
 }
 
-unsafe fn nlopt_isfinite(mut x: libc::c_double) -> libc::c_int {
-    return (x.abs() <= 1.7976931348623157e+308f64) as libc::c_int;
+unsafe fn nlopt_isfinite<T: Float>(x: T) -> libc::c_int {
+    x.is_finite() as libc::c_int
 }
 
-unsafe fn nlopt_istiny(mut x: libc::c_double) -> libc::c_int {
-    if x == 0.0f64 {
+unsafe fn nlopt_istiny<T: Float>(x: T) -> libc::c_int {
+    if x == T::zero() {
         return 1 as libc::c_int;
     } else {
-        return (x.abs() < 2.2250738585072014e-308f64) as libc::c_int;
+        return (x.abs() < T::min_positive_value()) as libc::c_int;
     };
 }
 
-unsafe fn nlopt_isnan(mut x: libc::c_double) -> libc::c_int {
-    return x.is_nan() as i32;
+unsafe fn nlopt_isnan<T: Float>(x: T) -> libc::c_int {
+    x.is_nan() as i32
 }
 
-unsafe fn nlopt_stop_evals(mut s: *const nlopt_stopping) -> libc::c_int {
+unsafe fn nlopt_stop_evals<T>(mut s: *const nlopt_stopping<T>) -> libc::c_int {
     return ((*s).maxeval > 0 as libc::c_int && *(*s).nevals_p >= (*s).maxeval) as libc::c_int;
 }
 
-unsafe fn nlopt_stop_time_(mut start: libc::c_double, mut maxtime: libc::c_double) -> libc::c_int {
-    return (maxtime > 0 as libc::c_int as libc::c_double && nlopt_seconds() - start >= maxtime)
+unsafe fn nlopt_stop_time_<T: Float>(start: T, maxtime: T) -> libc::c_int {
+    return (maxtime > T::zero() && nlopt_seconds::<T>() - start >= maxtime)
         as libc::c_int;
 }
 
-unsafe fn nlopt_stop_time(mut s: *const nlopt_stopping) -> libc::c_int {
+unsafe fn nlopt_stop_time<T: Float>(mut s: *const nlopt_stopping<T>) -> libc::c_int {
     return nlopt_stop_time_((*s).start, (*s).maxtime);
 }
 
-unsafe fn nlopt_stop_evalstime(mut stop: *const nlopt_stopping) -> libc::c_int {
+unsafe fn nlopt_stop_evalstime<T: Float>(mut stop: *const nlopt_stopping<T>) -> libc::c_int {
     return (nlopt_stop_evals(stop) != 0 || nlopt_stop_time(stop) != 0) as libc::c_int;
 }
 
-unsafe fn nlopt_stop_forced(mut stop: *const nlopt_stopping) -> libc::c_int {
+unsafe fn nlopt_stop_forced<T>(mut stop: *const nlopt_stopping<T>) -> libc::c_int {
     return (!((*stop).force_stop).is_null() && *(*stop).force_stop != 0) as libc::c_int;
 }
 //
@@ -644,13 +660,13 @@ unsafe fn nlopt_stop_forced(mut stop: *const nlopt_stopping) -> libc::c_int {
 //     return p;
 // }
 
-unsafe fn nlopt_stop_msg(mut s: *mut nlopt_stopping, msg: &str) {
+unsafe fn nlopt_stop_msg<T>(mut s: *mut nlopt_stopping<T>, msg: &str) {
     (*s).stop_msg = msg.to_string();
 }
 
-unsafe fn nlopt_count_constraints(
+unsafe fn nlopt_count_constraints<T>(
     mut p: libc::c_uint,
-    mut c: *const nlopt_constraint,
+    mut c: *const nlopt_constraint<T>,
 ) -> libc::c_uint {
     let mut i: libc::c_uint = 0;
     let mut count: libc::c_uint = 0 as libc::c_int as libc::c_uint;
@@ -662,9 +678,9 @@ unsafe fn nlopt_count_constraints(
     return count;
 }
 
-unsafe fn nlopt_max_constraint_dim(
+unsafe fn nlopt_max_constraint_dim<T>(
     mut p: libc::c_uint,
-    mut c: *const nlopt_constraint,
+    mut c: *const nlopt_constraint<T>,
 ) -> libc::c_uint {
     let mut i: libc::c_uint = 0;
     let mut max_dim: libc::c_uint = 0 as libc::c_int as libc::c_uint;
@@ -678,12 +694,12 @@ unsafe fn nlopt_max_constraint_dim(
     return max_dim;
 }
 
-unsafe fn nlopt_eval_constraint<U>(
-    mut result: *mut libc::c_double,
-    mut grad: *mut libc::c_double,
-    mut c: *const nlopt_constraint,
+unsafe fn nlopt_eval_constraint<T: Float, U>(
+    mut result: *mut T,
+    mut grad: *mut T,
+    mut c: *const nlopt_constraint<T>,
     mut n: libc::c_uint,
-    mut x: *const libc::c_double,
+    mut x: *const T,
 ) {
     if ((*c).f).is_some() {
         *result.offset(0 as libc::c_int as isize) =
@@ -691,33 +707,29 @@ unsafe fn nlopt_eval_constraint<U>(
         // even if (*c), nlopt_constraint object was correctly built with a nlopt_constraint_raw_callback!!! 
         //    ((*c).f).expect("non-null function pointer")(n, x, grad, (*c).f_data);
         // Maybe the U generic parameter required explains it cannot work like with C ???
-        nlopt_constraint_raw_callback::<&dyn Func<U>, U>(n, x, grad, (*c).f_data);
+        nlopt_constraint_raw_callback::<&dyn Func<T, U>, T, U>(n, x, grad, (*c).f_data);
         // relf: Take the opposite to manage cstr as being nonnegative in the end like the original cobyla
-        *result.offset(0 as libc::c_int as isize) = -*result.offset(0 as libc::c_int as isize)
+        *result.offset(0 as libc::c_int as isize) = T::zero() - *result.offset(0 as libc::c_int as isize)
     } else {
         ((*c).mf).expect("non-null function pointer")((*c).m, result, n, x, grad, (*c).f_data);
     };
 }
 
-unsafe fn nlopt_compute_rescaling(
+unsafe fn nlopt_compute_rescaling<T: Float>(
     mut n: libc::c_uint,
-    mut dx: *const libc::c_double,
-) -> *mut libc::c_double {
-    // let mut s: *mut libc::c_double = malloc(
-    //     (::std::mem::size_of::<libc::c_double>() as libc::c_ulong).wrapping_mul(n as libc::c_ulong),
-    // ) as *mut libc::c_double;
-
-    let mut space: Box<Vec<libc::c_double>> = Box::new(vec![0.; usize::try_from(n).unwrap()]);
-    let s = space.as_mut_ptr() as *mut libc::c_double;
+    mut dx: *const T,
+) -> *mut T {
+    let mut space: Box<Vec<T>> = Box::new(vec![T::zero(); usize::try_from(n).unwrap()]);
+    let s = space.as_mut_ptr() as *mut T;
     std::mem::forget(space);
 
     let mut i: libc::c_uint = 0;
     if s.is_null() {
-        return 0 as *mut libc::c_double;
+        return 0 as *mut T;
     }
     i = 0 as libc::c_int as libc::c_uint;
     while i < n {
-        *s.offset(i as isize) = 1.0f64;
+        *s.offset(i as isize) = T::one();
         i = i.wrapping_add(1);
     }
     if n == 1 as libc::c_int as libc::c_uint {
@@ -740,11 +752,11 @@ unsafe fn nlopt_compute_rescaling(
     return s;
 }
 
-unsafe fn nlopt_rescale(
+unsafe fn nlopt_rescale<T: Float>(
     mut n: libc::c_uint,
-    mut s: *const libc::c_double,
-    mut x: *const libc::c_double,
-    mut xs: *mut libc::c_double,
+    mut s: *const T,
+    mut x: *const T,
+    mut xs: *mut T,
 ) {
     let mut i: libc::c_uint = 0;
     if s.is_null() {
@@ -762,11 +774,11 @@ unsafe fn nlopt_rescale(
     };
 }
 
-unsafe fn nlopt_unscale(
+unsafe fn nlopt_unscale<T: Float>(
     mut n: libc::c_uint,
-    mut s: *const libc::c_double,
-    mut x: *const libc::c_double,
-    mut xs: *mut libc::c_double,
+    mut s: *const T,
+    mut x: *const T,
+    mut xs: *mut T,
 ) {
     let mut i: libc::c_uint = 0;
     if s.is_null() {
@@ -784,57 +796,53 @@ unsafe fn nlopt_unscale(
     };
 }
 
-unsafe fn nlopt_new_rescaled(
+unsafe fn nlopt_new_rescaled<T: Float>(
     mut n: libc::c_uint,
-    mut s: *const libc::c_double,
-    mut x: *const libc::c_double,
-) -> *mut libc::c_double {
-    // let mut xs: *mut libc::c_double = malloc(
-    //     (::std::mem::size_of::<libc::c_double>() as libc::c_ulong).wrapping_mul(n as libc::c_ulong),
-    // ) as *mut libc::c_double;
-
-    let mut space: Box<Vec<libc::c_double>> = Box::new(vec![0.; usize::try_from(n).unwrap()]);
-    let xs = space.as_mut_ptr() as *mut libc::c_double;
+    mut s: *const T,
+    mut x: *const T,
+) -> *mut T {
+    let mut space: Box<Vec<T>> = Box::new(vec![T::zero(); usize::try_from(n).unwrap()]);
+    let xs = space.as_mut_ptr() as *mut T;
     std::mem::forget(space);
 
     if xs.is_null() {
-        return 0 as *mut libc::c_double;
+        return 0 as *mut T;
     }
     nlopt_rescale(n, s, x, xs);
     return xs;
 }
 
-unsafe fn nlopt_reorder_bounds(
+unsafe fn nlopt_reorder_bounds<T: Float>(
     mut n: libc::c_uint,
-    mut lb: *mut libc::c_double,
-    mut ub: *mut libc::c_double,
+    mut lb: *mut T,
+    mut ub: *mut T,
 ) {
     let mut i: libc::c_uint = 0;
     i = 0 as libc::c_int as libc::c_uint;
     while i < n {
         if *lb.offset(i as isize) > *ub.offset(i as isize) {
-            let mut t: libc::c_double = *lb.offset(i as isize);
+            let mut t: T = *lb.offset(i as isize);
             *lb.offset(i as isize) = *ub.offset(i as isize);
             *ub.offset(i as isize) = t;
         }
         i = i.wrapping_add(1);
     }
 }
-unsafe fn func_wrap<U>(
+unsafe fn func_wrap<T: Float, U>(
     mut ni: libc::c_int,
     mut _mi: libc::c_int,
-    mut x: *mut libc::c_double,
-    mut f: *mut libc::c_double,
-    mut con: *mut libc::c_double,
-    mut s: *mut func_wrap_state,
+    mut x: *mut T,
+    mut f: *mut T,
+    mut con: *mut T,
+    mut s: *mut func_wrap_state<T>,
 ) -> libc::c_int {
     let mut n: libc::c_uint = ni as libc::c_uint;
     let mut i: libc::c_uint = 0;
     let mut j: libc::c_uint = 0;
     let mut k: libc::c_uint = 0;
-    let mut xtmp: *mut libc::c_double = (*s).xtmp;
-    let mut lb: *const libc::c_double = (*s).lb;
-    let mut ub: *const libc::c_double = (*s).ub;
+    let mut xtmp: *mut T = (*s).xtmp;
+    let mut lb: *const T = (*s).lb;
+    let mut ub: *const T = (*s).ub;
     j = 0 as libc::c_int as libc::c_uint;
     while j < n {
         if *x.offset(j as isize) < *lb.offset(j as isize) {
@@ -850,7 +858,7 @@ unsafe fn func_wrap<U>(
     *f = ((*s).f).expect("non-null function pointer")(
         n,
         xtmp,
-        0 as *mut libc::c_double,
+        0 as *mut T,
         (*s).f_data,
     );
     if nlopt_stop_forced((*s).stop) != 0 {
@@ -859,9 +867,9 @@ unsafe fn func_wrap<U>(
     i = 0 as libc::c_int as libc::c_uint;
     j = 0 as libc::c_int as libc::c_uint;
     while j < (*s).m_orig {
-        nlopt_eval_constraint::<U>(
+        nlopt_eval_constraint::<T, U>(
             con.offset(i as isize),
-            0 as *mut libc::c_double,
+            0 as *mut T,
             ((*s).fc).offset(j as isize),
             n,
             xtmp,
@@ -871,7 +879,7 @@ unsafe fn func_wrap<U>(
         }
         k = 0 as libc::c_int as libc::c_uint;
         while k < (*((*s).fc).offset(j as isize)).m {
-            *con.offset(i.wrapping_add(k) as isize) = -*con.offset(i.wrapping_add(k) as isize);
+            *con.offset(i.wrapping_add(k) as isize) = T::zero() - *con.offset(i.wrapping_add(k) as isize);
             k = k.wrapping_add(1);
         }
         i = i.wrapping_add((*((*s).fc).offset(j as isize)).m);
@@ -879,9 +887,9 @@ unsafe fn func_wrap<U>(
     }
     j = 0 as libc::c_int as libc::c_uint;
     while j < (*s).p {
-        nlopt_eval_constraint::<U>(
+        nlopt_eval_constraint::<T, U>(
             con.offset(i as isize),
-            0 as *mut libc::c_double,
+            0 as *mut T,
             ((*s).h).offset(j as isize),
             n,
             xtmp,
@@ -894,7 +902,7 @@ unsafe fn func_wrap<U>(
             *con.offset(
                 i.wrapping_add((*((*s).h).offset(j as isize)).m)
                     .wrapping_add(k) as isize,
-            ) = -*con.offset(i.wrapping_add(k) as isize);
+            ) = T::zero() - *con.offset(i.wrapping_add(k) as isize);
             k = k.wrapping_add(1);
         }
         i = i.wrapping_add(
@@ -918,41 +926,41 @@ unsafe fn func_wrap<U>(
     }
     return 0 as libc::c_int;
 }
-pub(crate) unsafe fn cobyla_minimize<U>(
+pub(crate) unsafe fn cobyla_minimize<T: Float + std::fmt::Debug + std::fmt::Display + std::ops::AddAssign + std::ops::SubAssign + std::ops::MulAssign + std::ops::DivAssign, U>(
     mut n: libc::c_uint,
-    mut f: nlopt_func,
+    mut f: nlopt_func<T>,
     mut f_data: *mut libc::c_void,
     mut m: libc::c_uint,
-    mut fc: *mut nlopt_constraint,
+    mut fc: *mut nlopt_constraint<T>,
     mut p: libc::c_uint,
-    mut h: *mut nlopt_constraint,
-    mut lb: *const libc::c_double,
-    mut ub: *const libc::c_double,
-    mut x: *mut libc::c_double,
-    mut minf: *mut libc::c_double,
-    mut stop: *mut nlopt_stopping,
-    mut dx: *const libc::c_double,
+    mut h: *mut nlopt_constraint<T>,
+    mut lb: *const T,
+    mut ub: *const T,
+    mut x: *mut T,
+    mut minf: *mut T,
+    mut stop: *mut nlopt_stopping<T>,
+    mut dx: *const T,
 ) -> nlopt_result {
     let mut current_block: u64;
     let mut i: libc::c_uint = 0;
     let mut j: libc::c_uint = 0;
-    let mut s: func_wrap_state = func_wrap_state {
+    let mut s: func_wrap_state<T> = func_wrap_state {
         f: None,
         f_data: 0 as *mut libc::c_void,
         m_orig: 0,
-        fc: 0 as *mut nlopt_constraint,
+        fc: 0 as *mut nlopt_constraint<T>,
         p: 0,
-        h: 0 as *mut nlopt_constraint,
-        xtmp: 0 as *mut libc::c_double,
-        lb: 0 as *mut libc::c_double,
-        ub: 0 as *mut libc::c_double,
-        con_tol: 0 as *mut libc::c_double,
-        scale: 0 as *mut libc::c_double,
-        stop: 0 as *mut nlopt_stopping,
+        h: 0 as *mut nlopt_constraint<T>,
+        xtmp: 0 as *mut T,
+        lb: 0 as *mut T,
+        ub: 0 as *mut T,
+        con_tol: 0 as *mut T,
+        scale: 0 as *mut T,
+        stop: 0 as *mut nlopt_stopping<T>,
     };
     let mut ret: nlopt_result = 0 as nlopt_result;
-    let mut rhobeg: libc::c_double = 0.;
-    let mut rhoend: libc::c_double = 0.;
+    let mut rhobeg: T = T::zero();
+    let mut rhoend: T = T::zero();
     s.f = f;
     s.f_data = f_data;
     s.m_orig = m;
@@ -960,7 +968,7 @@ pub(crate) unsafe fn cobyla_minimize<U>(
     s.p = p;
     s.h = h;
     s.stop = stop;
-    s.scale = 0 as *mut libc::c_double;
+    s.scale = 0 as *mut T;
     s.con_tol = s.scale;
     s.xtmp = s.con_tol;
     s.ub = s.xtmp;
@@ -975,13 +983,13 @@ pub(crate) unsafe fn cobyla_minimize<U>(
                 current_block = 15652330335145281839;
                 break;
             }
-            if *(s.scale).offset(j as isize) == 0 as libc::c_int as libc::c_double
+            if *(s.scale).offset(j as isize) == T::zero()
                 || nlopt_isfinite(*(s.scale).offset(j as isize)) == 0
             {
                 nlopt_stop_msg(
                     stop,
                     &format!(
-                        "invalid scaling {} of dimension {}: possible over/underflow?",
+                        "invalid scaling {:?} of dimension {}: possible over/underflow?",
                         *(s.scale).offset(j as isize),
                         j
                     ),
@@ -1005,14 +1013,10 @@ pub(crate) unsafe fn cobyla_minimize<U>(
                         ret = NLOPT_OUT_OF_MEMORY;
                     } else {
                         nlopt_reorder_bounds(n, s.lb, s.ub);
-                        // s.xtmp = malloc(
-                        //     (::std::mem::size_of::<libc::c_double>() as libc::c_ulong)
-                        //         .wrapping_mul(n as libc::c_ulong),
-                        // ) as *mut libc::c_double;
 
-                        let mut space: Box<Vec<libc::c_double>> =
-                            Box::new(vec![0.; usize::try_from(n).unwrap()]);
-                        s.xtmp = space.as_mut_ptr() as *mut libc::c_double;
+                        let mut space: Box<Vec<T>> =
+                            Box::new(vec![T::zero(); usize::try_from(n).unwrap()]);
+                        s.xtmp = space.as_mut_ptr() as *mut T;
                         std::mem::forget(space);
 
                         if (s.xtmp).is_null() {
@@ -1049,15 +1053,11 @@ pub(crate) unsafe fn cobyla_minimize<U>(
                                 }
                                 j = j.wrapping_add(1);
                             }
-                            // s.con_tol = malloc(
-                            //     (::std::mem::size_of::<libc::c_double>() as libc::c_ulong)
-                            //         .wrapping_mul(m as libc::c_ulong),
-                            // ) as *mut libc::c_double;
 
                             if m > 0 {
-                                let mut space: Box<Vec<libc::c_double>> =
-                                    Box::new(vec![0.; usize::try_from(m).unwrap()]);
-                                s.con_tol = space.as_mut_ptr() as *mut libc::c_double;
+                                let mut space: Box<Vec<T>> =
+                                    Box::new(vec![T::zero(); usize::try_from(m).unwrap()]);
+                                s.con_tol = space.as_mut_ptr() as *mut T;
                                 std::mem::forget(space);
                             }
 
@@ -1067,7 +1067,7 @@ pub(crate) unsafe fn cobyla_minimize<U>(
                                 j = 0 as libc::c_int as libc::c_uint;
                                 while j < m {
                                     *(s.con_tol).offset(j as isize) =
-                                        0 as libc::c_int as libc::c_double;
+                                        T::zero();
                                     j = j.wrapping_add(1);
                                 }
                                 i = 0 as libc::c_int as libc::c_uint;
@@ -1118,14 +1118,14 @@ pub(crate) unsafe fn cobyla_minimize<U>(
                                     s.ub,
                                     COBYLA_MSG_NONE as libc::c_int,
                                     Some(
-                                        func_wrap::<U>
+                                        func_wrap::<T, U>
                                             as unsafe fn(
                                                 libc::c_int,
                                                 libc::c_int,
-                                                *mut libc::c_double,
-                                                *mut libc::c_double,
-                                                *mut libc::c_double,
-                                                *mut func_wrap_state,
+                                                *mut T,
+                                                *mut T,
+                                                *mut T,
+                                                *mut func_wrap_state<T>,
                                             )
                                                 -> libc::c_int,
                                     ),
@@ -1171,28 +1171,31 @@ unsafe fn lcg_rand(mut seed: *mut uint32_t) -> uint32_t {
         .wrapping_add(12345 as libc::c_int as libc::c_uint);
     return *seed;
 }
-unsafe fn lcg_urand(
+unsafe fn lcg_urand<T: Float>(
     mut seed: *mut uint32_t,
-    mut a: libc::c_double,
-    mut b: libc::c_double,
-) -> libc::c_double {
-    return a + lcg_rand(seed) as libc::c_double * (b - a)
-        / -(1 as libc::c_int) as uint32_t as libc::c_double;
+    mut a: T,
+    mut b: T,
+) -> T {
+    // Generate random value in range [a, b] from uint32 random seed
+    // Using generic T throughout, no conversion through f64
+    let rand_val = T::from(lcg_rand(seed)).unwrap();
+    let max_val = T::from(u32::MAX).unwrap();
+    return a + rand_val * (b - a) / max_val;
 }
 
-unsafe fn cobyla(
+unsafe fn cobyla<T: Float + std::fmt::Display + std::ops::AddAssign + std::ops::SubAssign + std::ops::MulAssign + std::ops::DivAssign>(
     mut n: libc::c_int,
     mut m: libc::c_int,
-    mut x: *mut libc::c_double,
-    mut minf: *mut libc::c_double,
-    mut rhobeg: libc::c_double,
-    mut rhoend: libc::c_double,
-    mut stop: *mut nlopt_stopping,
-    mut lb: *const libc::c_double,
-    mut ub: *const libc::c_double,
+    mut x: *mut T,
+    mut minf: *mut T,
+    mut rhobeg: T,
+    mut rhoend: T,
+    mut stop: *mut nlopt_stopping<T>,
+    mut lb: *const T,
+    mut ub: *const T,
     mut iprint: libc::c_int,
-    mut calcfc: Option<cobyla_function>,
-    mut state: *mut func_wrap_state,
+    mut calcfc: Option<cobyla_function<T>>,
+    mut state: *mut func_wrap_state<T>,
 ) -> nlopt_result {
     let mut icon: libc::c_int = 0;
     let mut isim: libc::c_int = 0;
@@ -1206,7 +1209,7 @@ unsafe fn cobyla(
     let mut idx: libc::c_int = 0;
     let mut mpp: libc::c_int = 0;
     let mut _iact: *mut libc::c_int = 0 as *mut libc::c_int;
-    let mut _w: *mut libc::c_double = 0 as *mut libc::c_double;
+    let mut _w: *mut T = 0 as *mut T;
     let mut rc: nlopt_result = 0 as nlopt_result;
     *(*stop).nevals_p = 0 as libc::c_int;
     if n == 0 as libc::c_int {
@@ -1221,19 +1224,13 @@ unsafe fn cobyla(
         }
         return NLOPT_INVALID_ARGS;
     }
-    // w = malloc(
-    //     ((n * (3 as libc::c_int * n + 2 as libc::c_int * m + 11 as libc::c_int)
-    //         + 4 as libc::c_int * m
-    //         + 6 as libc::c_int) as libc::c_uint as libc::c_ulong)
-    //         .wrapping_mul(::std::mem::size_of::<libc::c_double>() as libc::c_ulong),
-    // ) as *mut libc::c_double;
 
     let space_size = n * (3 as libc::c_int * n + 2 as libc::c_int * m + 11 as libc::c_int)
         + 4 as libc::c_int * m
         + 6 as libc::c_int;
-    let mut space: Box<Vec<libc::c_double>> =
-        Box::new(vec![0.; usize::try_from(space_size).unwrap()]);
-    let mut w = space.as_mut_ptr() as *mut libc::c_double;
+    let mut space: Box<Vec<T>> =
+        Box::new(vec![T::zero(); usize::try_from(space_size).unwrap()]);
+    let mut w = space.as_mut_ptr() as *mut T;
     std::mem::forget(space);
 
     if w.is_null() {
@@ -1248,8 +1245,8 @@ unsafe fn cobyla(
     // ) as *mut libc::c_int;
 
     let space_size = m + 1;
-    let mut space: Box<Vec<libc::c_double>> =
-        Box::new(vec![0.; usize::try_from(space_size).unwrap()]);
+    let mut space: Box<Vec<libc::c_int>> =
+        Box::new(vec![0; usize::try_from(space_size).unwrap()]);
     let mut iact = space.as_mut_ptr() as *mut libc::c_int;
     std::mem::forget(space);
 
@@ -1311,31 +1308,31 @@ unsafe fn cobyla(
     let _ = Box::from_raw(iact);
     return rc;
 }
-unsafe fn cobylb(
+unsafe fn cobylb<T: Float + std::fmt::Display + std::ops::AddAssign + std::ops::SubAssign + std::ops::MulAssign + std::ops::DivAssign>(
     mut n: *mut libc::c_int,
     mut m: *mut libc::c_int,
     mut mpp: *mut libc::c_int,
-    mut x: *mut libc::c_double,
-    mut minf: *mut libc::c_double,
-    mut rhobeg: *mut libc::c_double,
-    mut rhoend: libc::c_double,
-    mut stop: *mut nlopt_stopping,
-    mut lb: *const libc::c_double,
-    mut ub: *const libc::c_double,
+    mut x: *mut T,
+    mut minf: *mut T,
+    mut rhobeg: *mut T,
+    mut rhoend: T,
+    mut stop: *mut nlopt_stopping<T>,
+    mut lb: *const T,
+    mut ub: *const T,
     mut iprint: *mut libc::c_int,
-    mut con: *mut libc::c_double,
-    mut sim: *mut libc::c_double,
-    mut simi: *mut libc::c_double,
-    mut datmat: *mut libc::c_double,
-    mut a: *mut libc::c_double,
-    mut vsig: *mut libc::c_double,
-    mut veta: *mut libc::c_double,
-    mut sigbar: *mut libc::c_double,
-    mut dx: *mut libc::c_double,
-    mut w: *mut libc::c_double,
+    mut con: *mut T,
+    mut sim: *mut T,
+    mut simi: *mut T,
+    mut datmat: *mut T,
+    mut a: *mut T,
+    mut vsig: *mut T,
+    mut veta: *mut T,
+    mut sigbar: *mut T,
+    mut dx: *mut T,
+    mut w: *mut T,
     mut iact: *mut libc::c_int,
-    mut calcfc: Option<cobyla_function>,
-    mut state: *mut func_wrap_state,
+    mut calcfc: Option<cobyla_function<T>>,
+    mut state: *mut func_wrap_state<T>,
 ) -> nlopt_result {
     let mut current_block: u64;
     let mut sim_dim1: libc::c_int = 0;
@@ -1349,41 +1346,41 @@ unsafe fn cobylb(
     let mut i__1: libc::c_int = 0;
     let mut i__2: libc::c_int = 0;
     let mut i__3: libc::c_int = 0;
-    let mut d__1: libc::c_double = 0.;
-    let mut d__2: libc::c_double = 0.;
-    let mut alpha: libc::c_double = 0.;
-    let mut delta: libc::c_double = 0.;
-    let mut denom: libc::c_double = 0.;
-    let mut tempa: libc::c_double = 0.;
-    let mut barmu: libc::c_double = 0.;
-    let mut beta: libc::c_double = 0.;
-    let mut cmin: libc::c_double = 0.0f64;
-    let mut cmax: libc::c_double = 0.0f64;
-    let mut cvmaxm: libc::c_double = 0.;
-    let mut dxsign: libc::c_double = 0.;
-    let mut prerem: libc::c_double = 0.0f64;
-    let mut edgmax: libc::c_double = 0.;
-    let mut pareta: libc::c_double = 0.;
-    let mut prerec: libc::c_double = 0.0f64;
-    let mut phimin: libc::c_double = 0.;
-    let mut parsig: libc::c_double = 0.0f64;
-    let mut gamma_: libc::c_double = 0.;
-    let mut phi: libc::c_double = 0.;
-    let mut rho: libc::c_double = 0.;
-    let mut sum: libc::c_double = 0.0f64;
-    let mut ratio: libc::c_double = 0.;
-    let mut vmold: libc::c_double = 0.;
-    let mut parmu: libc::c_double = 0.;
-    let mut error: libc::c_double = 0.;
-    let mut vmnew: libc::c_double = 0.;
-    let mut resmax: libc::c_double = 0.;
-    let mut cvmaxp: libc::c_double = 0.;
-    let mut resnew: libc::c_double = 0.;
-    let mut trured: libc::c_double = 0.;
-    let mut temp: libc::c_double = 0.;
-    let mut wsig: libc::c_double = 0.;
-    let mut f: libc::c_double = 0.;
-    let mut weta: libc::c_double = 0.;
+    let mut d__1: T = T::zero();
+    let mut d__2: T = T::zero();
+    let mut alpha: T = T::zero();
+    let mut delta: T = T::zero();
+    let mut denom: T = T::zero();
+    let mut tempa: T = T::zero();
+    let mut barmu: T = T::zero();
+    let mut beta: T = T::zero();
+    let mut cmin: T = T::zero();
+    let mut cmax: T = T::zero();
+    let mut cvmaxm: T = T::zero();
+    let mut dxsign: T = T::zero();
+    let mut prerem: T = T::zero();
+    let mut edgmax: T = T::zero();
+    let mut pareta: T = T::zero();
+    let mut prerec: T = T::zero();
+    let mut phimin: T = T::zero();
+    let mut parsig: T = T::zero();
+    let mut gamma_: T = T::zero();
+    let mut phi: T = T::zero();
+    let mut rho: T = T::zero();
+    let mut sum: T = T::zero();
+    let mut ratio: T = T::zero();
+    let mut vmold: T = T::zero();
+    let mut parmu: T = T::zero();
+    let mut error: T = T::zero();
+    let mut vmnew: T = T::zero();
+    let mut resmax: T = T::zero();
+    let mut cvmaxp: T = T::zero();
+    let mut resnew: T = T::zero();
+    let mut trured: T = T::zero();
+    let mut temp: T = T::zero();
+    let mut wsig: T = T::zero();
+    let mut f: T = T::zero();
+    let mut weta: T = T::zero();
     let mut i__: libc::c_int = 0;
     let mut j: libc::c_int = 0;
     let mut k: libc::c_int = 0;
@@ -1406,7 +1403,7 @@ unsafe fn cobylb(
     let mut rc: nlopt_result = NLOPT_SUCCESS;
     let mut seed: uint32_t = (*n + *m) as uint32_t;
     let mut feasible: libc::c_int = 0;
-    *minf = f64::INFINITY;
+    *minf = T::infinity();
     a_dim1 = *n;
     a_offset = 1 as libc::c_int + a_dim1 * 1 as libc::c_int;
     a = a.offset(-(a_offset as isize));
@@ -1437,12 +1434,12 @@ unsafe fn cobylb(
     iptemp = iptem + 1 as libc::c_int;
     np = *n + 1 as libc::c_int;
     mp = *m + 1 as libc::c_int;
-    alpha = 0.25f64;
-    beta = 2.1f64;
-    gamma_ = 0.5f64;
-    delta = 1.1f64;
+    alpha = T::from(0.25).unwrap();
+    beta = T::from(2.1).unwrap();
+    gamma_ = T::from(0.5).unwrap();
+    delta = T::from(1.1).unwrap();
     rho = *rhobeg;
-    parmu = 0.0f64;
+    parmu = T::zero();
     if *iprint >= 2 as libc::c_int {
         fprintf(
             Io::stderr,
@@ -1452,17 +1449,17 @@ unsafe fn cobylb(
             ),
         );
     }
-    temp = 1.0f64 / rho;
+    temp = T::one() / rho;
     i__1 = *n;
     i__ = 1 as libc::c_int;
     while i__ <= i__1 {
-        let mut rhocur: libc::c_double = 0.;
+        let mut rhocur: T = T::zero();
         *sim.offset((i__ + np * sim_dim1) as isize) = *x.offset(i__ as isize);
         i__2 = *n;
         j = 1 as libc::c_int;
         while j <= i__2 {
-            *sim.offset((i__ + j * sim_dim1) as isize) = 0.0f64;
-            *simi.offset((i__ + j * simi_dim1) as isize) = 0.0f64;
+            *sim.offset((i__ + j * sim_dim1) as isize) = T::zero();
+            *simi.offset((i__ + j * simi_dim1) as isize) = T::zero();
             j += 1;
         }
         rhocur = rho;
@@ -1472,13 +1469,13 @@ unsafe fn cobylb(
             } else if *ub.offset(i__ as isize) - *x.offset(i__ as isize)
                 > *x.offset(i__ as isize) - *lb.offset(i__ as isize)
             {
-                rhocur = 0.5f64 * (*ub.offset(i__ as isize) - *x.offset(i__ as isize));
+                rhocur = T::from(0.5).unwrap() * (*ub.offset(i__ as isize) - *x.offset(i__ as isize));
             } else {
-                rhocur = 0.5f64 * (*x.offset(i__ as isize) - *lb.offset(i__ as isize));
+                rhocur = T::from(0.5).unwrap() * (*x.offset(i__ as isize) - *lb.offset(i__ as isize));
             }
         }
         *sim.offset((i__ + i__ * sim_dim1) as isize) = rhocur;
-        *simi.offset((i__ + i__ * simi_dim1) as isize) = 1.0f64 / rhocur;
+        *simi.offset((i__ + i__ * simi_dim1) as isize) = T::one() / rhocur;
         i__ += 1;
     }
     jdrop = np;
@@ -1515,7 +1512,7 @@ unsafe fn cobylb(
             current_block = 16949430136398296108;
             break;
         } else {
-            resmax = 0.0f64;
+            resmax = T::zero();
             feasible = 1 as libc::c_int;
             if *m > 0 as libc::c_int {
                 i__1 = *m;
@@ -1575,19 +1572,19 @@ unsafe fn cobylb(
                         + parmu * *datmat.offset((*mpp + np * datmat_dim1) as isize);
                     vmnew = f + parmu * resmax;
                     trured = vmold - vmnew;
-                    if parmu == 0.0f64 && f == *datmat.offset((mp + np * datmat_dim1) as isize) {
+                    if parmu == T::zero() && f == *datmat.offset((mp + np * datmat_dim1) as isize) {
                         prerem = prerec;
                         trured = *datmat.offset((*mpp + np * datmat_dim1) as isize) - resmax;
                     }
-                    ratio = 0.0f64;
-                    if trured <= 0.0f32 as libc::c_double {
-                        ratio = 1.0f32 as libc::c_double;
+                    ratio = T::zero();
+                    if trured <= T::from(0.0).unwrap() {
+                        ratio = T::one();
                     }
                     jdrop = 0 as libc::c_int;
                     i__1 = *n;
                     j = 1 as libc::c_int;
                     while j <= i__1 {
-                        temp = 0.0f64;
+                        temp = T::zero();
                         i__2 = *n;
                         i__ = 1 as libc::c_int;
                         while i__ <= i__2 {
@@ -1612,8 +1609,8 @@ unsafe fn cobylb(
                             || *sigbar.offset(j as isize) >= *vsig.offset(j as isize)
                         {
                             temp = *veta.offset(j as isize);
-                            if trured > 0.0f64 {
-                                temp = 0.0f64;
+                            if trured > T::zero() {
+                                temp = T::zero();
                                 i__2 = *n;
                                 i__ = 1 as libc::c_int;
                                 while i__ <= i__2 {
@@ -1637,7 +1634,7 @@ unsafe fn cobylb(
                     if jdrop == 0 as libc::c_int {
                         current_block = 17974563553836679504;
                     } else {
-                        temp = 0.0f64;
+                        temp = T::zero();
                         i__1 = *n;
                         i__ = 1 as libc::c_int;
                         while i__ <= i__1 {
@@ -1657,7 +1654,7 @@ unsafe fn cobylb(
                         j = 1 as libc::c_int;
                         while j <= i__1 {
                             if j != jdrop {
-                                temp = 0.0f64;
+                                temp = T::zero();
                                 i__2 = *n;
                                 i__ = 1 as libc::c_int;
                                 while i__ <= i__2 {
@@ -1682,10 +1679,10 @@ unsafe fn cobylb(
                                 *con.offset(k as isize);
                             k += 1;
                         }
-                        if trured > 0.0f64 && trured >= prerem * 0.1f64 {
-                            if trured >= prerem * 0.9f64 && trured <= prerem * 1.1f64 && iflag != 0
+                        if trured > T::zero() && trured >= prerem * T::from(0.1).unwrap() {
+                            if trured >= prerem * T::from(0.9).unwrap() && trured <= prerem * T::from(1.1).unwrap() && iflag != 0
                             {
-                                rho *= 2.0f64;
+                                rho = rho * T::from(2.0).unwrap();
                             }
                             current_block = 16207618807156029286;
                         } else {
@@ -1706,7 +1703,7 @@ unsafe fn cobylb(
                                 *x.offset(jdrop as isize) =
                                     *sim.offset((jdrop + np * sim_dim1) as isize);
                             } else {
-                                let mut rhocur_0: libc::c_double = *x.offset(jdrop as isize)
+                                let mut rhocur_0: T = *x.offset(jdrop as isize)
                                     - *sim.offset((jdrop + np * sim_dim1) as isize);
                                 *sim.offset((jdrop + np * sim_dim1) as isize) =
                                     *x.offset(jdrop as isize);
@@ -1723,7 +1720,7 @@ unsafe fn cobylb(
                                 k = 1 as libc::c_int;
                                 while k <= i__1 {
                                     *sim.offset((jdrop + k * sim_dim1) as isize) = -rhocur_0;
-                                    temp = 0.0f32 as libc::c_double;
+                                    temp = T::zero();
                                     i__2 = jdrop;
                                     i__ = k;
                                     while i__ <= i__2 {
@@ -1752,7 +1749,7 @@ unsafe fn cobylb(
                                 ibrnch = 0 as libc::c_int;
                                 current_block = 16207618807156029286;
                             } else {
-                                let mut fbest: libc::c_double = if ifull == 1 as libc::c_int {
+                                let mut fbest: T = if ifull == 1 as libc::c_int {
                                     f
                                 } else {
                                     *datmat.offset((mp + np * datmat_dim1) as isize)
@@ -1764,12 +1761,12 @@ unsafe fn cobylb(
                                 } else {
                                     *minf = fbest;
                                     if rho > rhoend {
-                                        rho *= 0.5f64;
-                                        if rho <= rhoend * 1.5f64 {
+                                        rho = rho * T::from(0.5).unwrap();
+                                        if rho <= rhoend * T::from(1.5).unwrap() {
                                             rho = rhoend;
                                         }
-                                        if parmu > 0.0f64 {
-                                            denom = 0.0f64;
+                                        if parmu > T::zero() {
+                                            denom = T::zero();
                                             i__1 = mp;
                                             k = 1 as libc::c_int;
                                             while k <= i__1 {
@@ -1789,13 +1786,13 @@ unsafe fn cobylb(
                                                     cmax = if d__1 >= d__2 { d__1 } else { d__2 };
                                                     i__ += 1;
                                                 }
-                                                if k <= *m && cmin < cmax * 0.5f64 {
-                                                    temp = (if cmax >= 0.0f64 {
+                                                if k <= *m && cmin < cmax * T::from(0.5).unwrap() {
+                                                    temp = (if cmax >= T::zero() {
                                                         cmax
                                                     } else {
-                                                        0.0f64
+                                                        T::zero()
                                                     }) - cmin;
-                                                    if denom <= 0.0f64 {
+                                                    if denom <= T::zero() {
                                                         denom = temp;
                                                     } else {
                                                         denom = if denom <= temp {
@@ -1807,8 +1804,8 @@ unsafe fn cobylb(
                                                 }
                                                 k += 1;
                                             }
-                                            if denom == 0.0f64 {
-                                                parmu = 0.0f64;
+                                            if denom == T::zero() {
+                                                parmu = T::zero();
                                             } else if cmax - cmin < parmu * denom {
                                                 parmu = (cmax - cmin) / denom;
                                             }
@@ -1870,7 +1867,7 @@ unsafe fn cobylb(
                                         }
                                         current_block = 16207618807156029286;
                                     } else {
-                                        rc = (if rhoend > 0 as libc::c_int as libc::c_double {
+                                        rc = (if rhoend > T::zero() {
                                             NLOPT_XTOL_REACHED as libc::c_int
                                         } else {
                                             NLOPT_ROUNDOFF_LIMITED as libc::c_int
@@ -1902,7 +1899,7 @@ unsafe fn cobylb(
                                 if temp < phimin {
                                     nbest = j;
                                     phimin = temp;
-                                } else if temp == phimin && parmu == 0.0f64 {
+                                } else if temp == phimin && parmu == T::zero() {
                                     if *datmat.offset((*mpp + j * datmat_dim1) as isize)
                                         < *datmat.offset((*mpp + nbest * datmat_dim1) as isize)
                                     {
@@ -1925,9 +1922,9 @@ unsafe fn cobylb(
                                 i__ = 1 as libc::c_int;
                                 while i__ <= i__1 {
                                     temp = *sim.offset((i__ + nbest * sim_dim1) as isize);
-                                    *sim.offset((i__ + nbest * sim_dim1) as isize) = 0.0f64;
+                                    *sim.offset((i__ + nbest * sim_dim1) as isize) = T::zero();
                                     *sim.offset((i__ + np * sim_dim1) as isize) += temp;
-                                    tempa = 0.0f64;
+                                    tempa = T::zero();
                                     i__2 = *n;
                                     k = 1 as libc::c_int;
                                     while k <= i__2 {
@@ -1939,22 +1936,22 @@ unsafe fn cobylb(
                                     i__ += 1;
                                 }
                             }
-                            error = 0.0f64;
+                            error = T::zero();
                             i__1 = *n;
                             i__ = 1 as libc::c_int;
                             while i__ <= i__1 {
                                 i__2 = *n;
                                 j = 1 as libc::c_int;
                                 while j <= i__2 {
-                                    temp = 0.0f64;
+                                    temp = T::zero();
                                     if i__ == j {
-                                        temp += -1.0f64;
+                                        temp = temp + T::from(-1.0).unwrap();
                                     }
                                     i__3 = *n;
                                     k = 1 as libc::c_int;
                                     while k <= i__3 {
                                         if *sim.offset((k + j * sim_dim1) as isize)
-                                            != 0 as libc::c_int as libc::c_double
+                                            != T::zero()
                                         {
                                             temp += *simi.offset((i__ + k * simi_dim1) as isize)
                                                 * *sim.offset((k + j * sim_dim1) as isize);
@@ -1968,7 +1965,7 @@ unsafe fn cobylb(
                                 }
                                 i__ += 1;
                             }
-                            if error > 0.1f64 {
+                            if error > T::from(0.1).unwrap() {
                                 if *iprint >= 1 as libc::c_int {
                                     fprintf(
                                         Io::stderr,
@@ -1995,7 +1992,7 @@ unsafe fn cobylb(
                                     i__1 = *n;
                                     i__ = 1 as libc::c_int;
                                     while i__ <= i__1 {
-                                        temp = 0.0f64;
+                                        temp = T::zero();
                                         i__3 = *n;
                                         j = 1 as libc::c_int;
                                         while j <= i__3 {
@@ -2017,8 +2014,8 @@ unsafe fn cobylb(
                                 i__1 = *n;
                                 j = 1 as libc::c_int;
                                 while j <= i__1 {
-                                    wsig = 0.0f64;
-                                    weta = 0.0f64;
+                                    wsig = T::zero();
+                                    weta = T::zero();
                                     i__2 = *n;
                                     i__ = 1 as libc::c_int;
                                     while i__ <= i__2 {
@@ -2028,7 +2025,7 @@ unsafe fn cobylb(
                                         weta += d__1 * d__1;
                                         i__ += 1;
                                     }
-                                    *vsig.offset(j as isize) = 1.0f64 / wsig.sqrt();
+                                    *vsig.offset(j as isize) = T::one() / wsig.sqrt();
                                     *veta.offset(j as isize) = weta.sqrt();
                                     if *vsig.offset(j as isize) < parsig
                                         || *veta.offset(j as isize) > pareta
@@ -2067,7 +2064,7 @@ unsafe fn cobylb(
                                     i__1 = *n;
                                     i__ = 1 as libc::c_int;
                                     while i__ <= i__1 {
-                                        let mut xi_0: libc::c_double =
+                                        let mut xi_0: T =
                                             *sim.offset((i__ + np * sim_dim1) as isize);
                                         if xi_0 + *dx.offset(i__ as isize)
                                             > *ub.offset(i__ as isize)
@@ -2084,7 +2081,7 @@ unsafe fn cobylb(
                                         i__ += 1;
                                     }
                                     if ifull == 0 as libc::c_int {
-                                        temp = 0.0f64;
+                                        temp = T::zero();
                                         i__1 = *n;
                                         i__ = 1 as libc::c_int;
                                         while i__ <= i__1 {
@@ -2092,14 +2089,14 @@ unsafe fn cobylb(
                                             temp += d__1 * d__1;
                                             i__ += 1;
                                         }
-                                        if temp < rho * 0.25f64 * rho {
+                                        if temp < rho * T::from(0.25).unwrap() * rho {
                                             ibrnch = 1 as libc::c_int;
                                             current_block = 17974563553836679504;
                                             continue;
                                         }
                                     }
-                                    resnew = 0.0f64;
-                                    *con.offset(mp as isize) = 0.0f64;
+                                    resnew = T::zero();
+                                    *con.offset(mp as isize) = T::zero();
                                     i__1 = mp;
                                     k = 1 as libc::c_int;
                                     while k <= i__1 {
@@ -2116,16 +2113,16 @@ unsafe fn cobylb(
                                         }
                                         k += 1;
                                     }
-                                    barmu = 0.0f64;
+                                    barmu = T::zero();
                                     prerec =
                                         *datmat.offset((*mpp + np * datmat_dim1) as isize) - resnew;
-                                    if prerec > 0.0f64 {
+                                    if prerec > T::zero() {
                                         barmu = sum / prerec;
                                     }
-                                    if !(parmu < barmu * 1.5f64) {
+                                    if !(parmu < barmu * T::from(1.5).unwrap()) {
                                         break;
                                     }
-                                    parmu = barmu * 2.0f64;
+                                    parmu = barmu * T::from(2.0).unwrap();
                                     if *iprint >= 2 as libc::c_int {
                                         fprintf(
                                             Io::stderr,
@@ -2148,7 +2145,7 @@ unsafe fn cobylb(
                                             current_block = 16207618807156029286;
                                             break;
                                         }
-                                        if temp == phi && parmu == 0.0f32 as libc::c_double {
+                                        if temp == phi && parmu == T::zero() {
                                             if *datmat.offset((*mpp + j * datmat_dim1) as isize)
                                                 < *datmat.offset((*mpp + np * datmat_dim1) as isize)
                                             {
@@ -2189,12 +2186,12 @@ unsafe fn cobylb(
                                             temp * *simi.offset((jdrop + i__ * simi_dim1) as isize);
                                         i__ += 1;
                                     }
-                                    cvmaxp = 0.0f64;
-                                    cvmaxm = 0.0f64;
+                                    cvmaxp = T::zero();
+                                    cvmaxm = T::zero();
                                     i__1 = mp;
                                     k = 1 as libc::c_int;
                                     while k <= i__1 {
-                                        sum = 0.0f64;
+                                        sum = T::zero();
                                         i__2 = *n;
                                         i__ = 1 as libc::c_int;
                                         while i__ <= i__2 {
@@ -2213,11 +2210,11 @@ unsafe fn cobylb(
                                         }
                                         k += 1;
                                     }
-                                    dxsign = 1.0f64;
+                                    dxsign = T::one();
                                     if parmu * (cvmaxp - cvmaxm) > sum + sum {
-                                        dxsign = -1.0f64;
+                                        dxsign = T::from(-1.0).unwrap();
                                     }
-                                    temp = 0.0f64;
+                                    temp = T::zero();
                                     i__1 = *n;
                                     i__ = 1 as libc::c_int;
                                     while i__ <= i__1 {
@@ -2225,10 +2222,10 @@ unsafe fn cobylb(
                                             * *dx.offset(i__ as isize)
                                             * lcg_urand(
                                                 &mut seed,
-                                                0.01f64,
-                                                1 as libc::c_int as libc::c_double,
+                                                T::from(0.01).unwrap(),
+                                                T::one(),
                                             );
-                                        let mut xi: libc::c_double =
+                                        let mut xi: T =
                                             *sim.offset((i__ + np * sim_dim1) as isize);
                                         loop {
                                             if xi + *dx.offset(i__ as isize)
@@ -2249,7 +2246,7 @@ unsafe fn cobylb(
                                                     -*dx.offset(i__ as isize);
                                                 break;
                                             } else {
-                                                *dx.offset(i__ as isize) *= 0.5f64;
+                                                *dx.offset(i__ as isize) = *dx.offset(i__ as isize) * T::from(0.5).unwrap();
                                             }
                                         }
                                         *sim.offset((i__ + jdrop * sim_dim1) as isize) =
@@ -2268,7 +2265,7 @@ unsafe fn cobylb(
                                     j = 1 as libc::c_int;
                                     while j <= i__1 {
                                         if j != jdrop {
-                                            temp = 0.0f64;
+                                            temp = T::zero();
                                             i__2 = *n;
                                             i__ = 1 as libc::c_int;
                                             while i__ <= i__2 {
@@ -2358,21 +2355,21 @@ unsafe fn cobylb(
     }
     rc
 }
-unsafe fn trstlp(
+unsafe fn trstlp<T: Float + std::fmt::Display + std::ops::AddAssign + std::ops::SubAssign + std::ops::MulAssign + std::ops::DivAssign>(
     mut n: *mut libc::c_int,
     mut m: *mut libc::c_int,
-    mut a: *mut libc::c_double,
-    mut b: *mut libc::c_double,
-    mut rho: *mut libc::c_double,
-    mut dx: *mut libc::c_double,
+    mut a: *mut T,
+    mut b: *mut T,
+    mut rho: *mut T,
+    mut dx: *mut T,
     mut ifull: *mut libc::c_int,
     mut iact: *mut libc::c_int,
-    mut z__: *mut libc::c_double,
-    mut zdota: *mut libc::c_double,
-    mut vmultc: *mut libc::c_double,
-    mut sdirn: *mut libc::c_double,
-    mut dxnew: *mut libc::c_double,
-    mut vmultd: *mut libc::c_double,
+    mut z__: *mut T,
+    mut zdota: *mut T,
+    mut vmultc: *mut T,
+    mut sdirn: *mut T,
+    mut dxnew: *mut T,
+    mut vmultd: *mut T,
 ) -> nlopt_result {
     let mut current_block: u64;
     let mut a_dim1: libc::c_int = 0;
@@ -2381,34 +2378,34 @@ unsafe fn trstlp(
     let mut z_offset: libc::c_int = 0;
     let mut i__1: libc::c_int = 0;
     let mut i__2: libc::c_int = 0;
-    let mut d__1: libc::c_double = 0.;
-    let mut d__2: libc::c_double = 0.;
-    let mut alpha: libc::c_double = 0.;
-    let mut tempa: libc::c_double = 0.;
-    let mut beta: libc::c_double = 0.;
-    let mut optnew: libc::c_double = 0.;
-    let mut stpful: libc::c_double = 0.;
-    let mut sum: libc::c_double = 0.;
-    let mut tot: libc::c_double = 0.;
-    let mut acca: libc::c_double = 0.;
-    let mut accb: libc::c_double = 0.;
-    let mut ratio: libc::c_double = 0.;
-    let mut vsave: libc::c_double = 0.;
-    let mut zdotv: libc::c_double = 0.;
-    let mut zdotw: libc::c_double = 0.;
-    let mut dd: libc::c_double = 0.;
-    let mut sd: libc::c_double = 0.;
-    let mut sp: libc::c_double = 0.;
-    let mut ss: libc::c_double = 0.;
-    let mut resold: libc::c_double = 0.0f64;
-    let mut zdvabs: libc::c_double = 0.;
-    let mut zdwabs: libc::c_double = 0.;
-    let mut sumabs: libc::c_double = 0.;
-    let mut resmax: libc::c_double = 0.;
-    let mut optold: libc::c_double = 0.;
-    let mut spabs: libc::c_double = 0.;
-    let mut temp: libc::c_double = 0.;
-    let mut step: libc::c_double = 0.;
+    let mut d__1: T = T::zero();
+    let mut d__2: T = T::zero();
+    let mut alpha: T = T::zero();
+    let mut tempa: T = T::zero();
+    let mut beta: T = T::zero();
+    let mut optnew: T = T::zero();
+    let mut stpful: T = T::zero();
+    let mut sum: T = T::zero();
+    let mut tot: T = T::zero();
+    let mut acca: T = T::zero();
+    let mut accb: T = T::zero();
+    let mut ratio: T = T::zero();
+    let mut vsave: T = T::zero();
+    let mut zdotv: T = T::zero();
+    let mut zdotw: T = T::zero();
+    let mut dd: T = T::zero();
+    let mut sd: T = T::zero();
+    let mut sp: T = T::zero();
+    let mut ss: T = T::zero();
+    let mut resold: T = T::zero();
+    let mut zdvabs: T = T::zero();
+    let mut zdwabs: T = T::zero();
+    let mut sumabs: T = T::zero();
+    let mut resmax: T = T::zero();
+    let mut optold: T = T::zero();
+    let mut spabs: T = T::zero();
+    let mut temp: T = T::zero();
+    let mut step: T = T::zero();
     let mut icount: libc::c_int = 0;
     let mut i__: libc::c_int = 0;
     let mut j: libc::c_int = 0;
@@ -2439,18 +2436,18 @@ unsafe fn trstlp(
     *ifull = 1 as libc::c_int;
     mcon = *m;
     nact = 0 as libc::c_int;
-    resmax = 0.0f64;
+    resmax = T::zero();
     i__1 = *n;
     i__ = 1 as libc::c_int;
     while i__ <= i__1 {
         i__2 = *n;
         j = 1 as libc::c_int;
         while j <= i__2 {
-            *z__.offset((i__ + j * z_dim1) as isize) = 0.0f64;
+            *z__.offset((i__ + j * z_dim1) as isize) = T::zero();
             j += 1;
         }
-        *z__.offset((i__ + i__ * z_dim1) as isize) = 1.0f64;
-        *dx.offset(i__ as isize) = 0.0f64;
+        *z__.offset((i__ + i__ * z_dim1) as isize) = T::one();
+        *dx.offset(i__ as isize) = T::zero();
         i__ += 1;
     }
     if *m >= 1 as libc::c_int {
@@ -2471,13 +2468,13 @@ unsafe fn trstlp(
             k += 1;
         }
     }
-    if resmax == 0.0f64 {
+    if resmax == T::zero() {
         current_block = 11188143500741601598;
     } else {
         i__1 = *n;
         i__ = 1 as libc::c_int;
         while i__ <= i__1 {
-            *sdirn.offset(i__ as isize) = 0.0f64;
+            *sdirn.offset(i__ as isize) = T::zero();
             i__ += 1;
         }
         current_block = 13859042411183768487;
@@ -2488,17 +2485,17 @@ unsafe fn trstlp(
                 mcon = *m + 1 as libc::c_int;
                 icon = mcon;
                 *iact.offset(mcon as isize) = mcon;
-                *vmultc.offset(mcon as isize) = 0.0f64;
+                *vmultc.offset(mcon as isize) = T::zero();
                 current_block = 13859042411183768487;
             }
             _ => {
-                optold = 0.0f64;
+                optold = T::zero();
                 icount = 0 as libc::c_int;
                 loop {
                     if mcon == *m {
                         optnew = resmax;
                     } else {
-                        optnew = 0.0f64;
+                        optnew = T::zero();
                         i__1 = *n;
                         i__ = 1 as libc::c_int;
                         while i__ <= i__1 {
@@ -2528,7 +2525,7 @@ unsafe fn trstlp(
                             loop {
                                 kp = k + 1 as libc::c_int;
                                 kk = *iact.offset(kp as isize);
-                                sp = 0.0f64;
+                                sp = T::zero();
                                 i__1 = *n;
                                 i__ = 1 as libc::c_int;
                                 while i__ <= i__1 {
@@ -2567,7 +2564,7 @@ unsafe fn trstlp(
                         if mcon > *m {
                             current_block = 15623375721314334080;
                         } else {
-                            temp = 0.0f64;
+                            temp = T::zero();
                             i__1 = *n;
                             i__ = 1 as libc::c_int;
                             while i__ <= i__1 {
@@ -2596,11 +2593,11 @@ unsafe fn trstlp(
                             *dxnew.offset(i__ as isize) = *a.offset((i__ + kk * a_dim1) as isize);
                             i__ += 1;
                         }
-                        tot = 0.0f64;
+                        tot = T::zero();
                         k = *n;
                         while k > nact {
-                            sp = 0.0f64;
-                            spabs = 0.0f64;
+                            sp = T::zero();
+                            spabs = T::zero();
                             i__1 = *n;
                             i__ = 1 as libc::c_int;
                             while i__ <= i__1 {
@@ -2610,12 +2607,12 @@ unsafe fn trstlp(
                                 spabs += (temp).abs();
                                 i__ += 1;
                             }
-                            acca = spabs + (sp).abs() * 0.1f64;
-                            accb = spabs + (sp).abs() * 0.2f64;
+                            acca = spabs + (sp).abs() * T::from(0.1).unwrap();
+                            accb = spabs + (sp).abs() * T::from(0.2).unwrap();
                             if spabs >= acca || acca >= accb {
-                                sp = 0.0f64;
+                                sp = T::zero();
                             }
-                            if tot == 0.0f64 {
+                            if tot == T::zero() {
                                 tot = sp;
                             } else {
                                 kp = k + 1 as libc::c_int;
@@ -2637,17 +2634,17 @@ unsafe fn trstlp(
                             }
                             k -= 1;
                         }
-                        if tot != 0.0f64 {
+                        if tot != T::zero() {
                             nact += 1;
                             *zdota.offset(nact as isize) = tot;
                             *vmultc.offset(icon as isize) = *vmultc.offset(nact as isize);
-                            *vmultc.offset(nact as isize) = 0.0f64;
+                            *vmultc.offset(nact as isize) = T::zero();
                         } else {
-                            ratio = -1.0f64;
+                            ratio = T::from(-1.0).unwrap();
                             k = nact;
                             loop {
-                                zdotv = 0.0f64;
-                                zdvabs = 0.0f64;
+                                zdotv = T::zero();
+                                zdvabs = T::zero();
                                 i__1 = *n;
                                 i__ = 1 as libc::c_int;
                                 while i__ <= i__1 {
@@ -2657,13 +2654,13 @@ unsafe fn trstlp(
                                     zdvabs += (temp).abs();
                                     i__ += 1;
                                 }
-                                acca = zdvabs + (zdotv).abs() * 0.1f64;
-                                accb = zdvabs + (zdotv).abs() * 0.2f64;
+                                acca = zdvabs + (zdotv).abs() * T::from(0.1).unwrap();
+                                accb = zdvabs + (zdotv).abs() * T::from(0.2).unwrap();
                                 if zdvabs < acca && acca < accb {
                                     temp = zdotv / *zdota.offset(k as isize);
-                                    if temp > 0.0f64 && *iact.offset(k as isize) <= *m {
+                                    if temp > T::zero() && *iact.offset(k as isize) <= *m {
                                         tempa = *vmultc.offset(k as isize) / temp;
-                                        if ratio < 0.0f64 || tempa < ratio {
+                                        if ratio < T::zero() || tempa < ratio {
                                             ratio = tempa;
                                         }
                                     }
@@ -2679,20 +2676,20 @@ unsafe fn trstlp(
                                     }
                                     *vmultd.offset(k as isize) = temp;
                                 } else {
-                                    *vmultd.offset(k as isize) = 0.0f64;
+                                    *vmultd.offset(k as isize) = T::zero();
                                 }
                                 k -= 1;
                                 if !(k > 0 as libc::c_int) {
                                     break;
                                 }
                             }
-                            if ratio < 0.0f64 {
+                            if ratio < T::zero() {
                                 break;
                             }
                             i__1 = nact;
                             k = 1 as libc::c_int;
                             while k <= i__1 {
-                                d__1 = 0.0f64;
+                                d__1 = T::zero();
                                 d__2 =
                                     *vmultc.offset(k as isize) - ratio * *vmultd.offset(k as isize);
                                 *vmultc.offset(k as isize) = if d__1 >= d__2 { d__1 } else { d__2 };
@@ -2705,7 +2702,7 @@ unsafe fn trstlp(
                                 loop {
                                     kp = k + 1 as libc::c_int;
                                     kw = *iact.offset(kp as isize);
-                                    sp = 0.0f64;
+                                    sp = T::zero();
                                     i__1 = *n;
                                     i__ = 1 as libc::c_int;
                                     while i__ <= i__1 {
@@ -2740,7 +2737,7 @@ unsafe fn trstlp(
                                 *iact.offset(k as isize) = isave;
                                 *vmultc.offset(k as isize) = vsave;
                             }
-                            temp = 0.0f64;
+                            temp = T::zero();
                             i__1 = *n;
                             i__ = 1 as libc::c_int;
                             while i__ <= i__1 {
@@ -2748,18 +2745,18 @@ unsafe fn trstlp(
                                     * *a.offset((i__ + kk * a_dim1) as isize);
                                 i__ += 1;
                             }
-                            if temp == 0.0f64 {
+                            if temp == T::zero() {
                                 break;
                             }
                             *zdota.offset(nact as isize) = temp;
-                            *vmultc.offset(icon as isize) = 0.0f64;
+                            *vmultc.offset(icon as isize) = T::zero();
                             *vmultc.offset(nact as isize) = ratio;
                         }
                         *iact.offset(icon as isize) = *iact.offset(nact as isize);
                         *iact.offset(nact as isize) = kk;
                         if mcon > *m && kk != mcon {
                             k = nact - 1 as libc::c_int;
-                            sp = 0.0f64;
+                            sp = T::zero();
                             i__1 = *n;
                             i__ = 1 as libc::c_int;
                             while i__ <= i__1 {
@@ -2794,7 +2791,7 @@ unsafe fn trstlp(
                             current_block = 15623375721314334080;
                         } else {
                             kk = *iact.offset(nact as isize);
-                            temp = 0.0f64;
+                            temp = T::zero();
                             i__1 = *n;
                             i__ = 1 as libc::c_int;
                             while i__ <= i__1 {
@@ -2802,8 +2799,8 @@ unsafe fn trstlp(
                                     * *a.offset((i__ + kk * a_dim1) as isize);
                                 i__ += 1;
                             }
-                            temp += -1.0f64;
-                            temp /= *zdota.offset(nact as isize);
+                            temp = temp + T::from(-1.0).unwrap();
+                            temp = temp / *zdota.offset(nact as isize);
                             i__1 = *n;
                             i__ = 1 as libc::c_int;
                             while i__ <= i__1 {
@@ -2816,7 +2813,7 @@ unsafe fn trstlp(
                     }
                     match current_block {
                         15623375721314334080 => {
-                            temp = 1.0f64 / *zdota.offset(nact as isize);
+                            temp = T::one() / *zdota.offset(nact as isize);
                             i__1 = *n;
                             i__ = 1 as libc::c_int;
                             while i__ <= i__1 {
@@ -2828,33 +2825,33 @@ unsafe fn trstlp(
                         _ => {}
                     }
                     dd = *rho * *rho;
-                    sd = 0.0f64;
-                    ss = 0.0f64;
+                    sd = T::zero();
+                    ss = T::zero();
                     i__1 = *n;
                     i__ = 1 as libc::c_int;
                     while i__ <= i__1 {
                         d__1 = *dx.offset(i__ as isize);
-                        if (d__1).abs() >= *rho * 1e-6f32 as libc::c_double {
+                        if (d__1).abs() >= *rho * T::from(1e-6).unwrap() {
                             d__2 = *dx.offset(i__ as isize);
-                            dd -= d__2 * d__2;
+                            dd = dd - d__2 * d__2;
                         }
-                        sd += *dx.offset(i__ as isize) * *sdirn.offset(i__ as isize);
+                        sd = sd + *dx.offset(i__ as isize) * *sdirn.offset(i__ as isize);
                         d__1 = *sdirn.offset(i__ as isize);
-                        ss += d__1 * d__1;
+                        ss = ss + d__1 * d__1;
                         i__ += 1;
                     }
-                    if dd <= 0.0f64 {
+                    if dd <= T::zero() {
                         break;
                     }
                     temp = (ss * dd).sqrt();
-                    if (sd).abs() >= temp * 1e-6f32 as libc::c_double {
+                    if (sd).abs() >= temp * T::from(1e-6).unwrap() {
                         temp = (ss * dd + sd * sd).sqrt();
                     }
                     stpful = dd / (temp + sd);
                     step = stpful;
                     if mcon == *m {
-                        acca = step + resmax * 0.1f64;
-                        accb = step + resmax * 0.2f64;
+                        acca = step + resmax * T::from(0.1).unwrap();
+                        accb = step + resmax * T::from(0.2).unwrap();
                         if step >= acca || acca >= accb {
                             current_block = 11188143500741601598;
                             continue 'c_8601;
@@ -2873,7 +2870,7 @@ unsafe fn trstlp(
                     }
                     if mcon == *m {
                         resold = resmax;
-                        resmax = 0.0f64;
+                        resmax = T::zero();
                         i__1 = nact;
                         k = 1 as libc::c_int;
                         while k <= i__1 {
@@ -2892,8 +2889,8 @@ unsafe fn trstlp(
                     }
                     k = nact;
                     loop {
-                        zdotw = 0.0f64;
-                        zdwabs = 0.0f64;
+                        zdotw = T::zero();
+                        zdwabs = T::zero();
                         i__1 = *n;
                         i__ = 1 as libc::c_int;
                         while i__ <= i__1 {
@@ -2903,10 +2900,10 @@ unsafe fn trstlp(
                             zdwabs += (temp).abs();
                             i__ += 1;
                         }
-                        acca = zdwabs + (zdotw).abs() * 0.1f64;
-                        accb = zdwabs + (zdotw).abs() * 0.2f64;
+                        acca = zdwabs + (zdotw).abs() * T::from(0.1).unwrap();
+                        accb = zdwabs + (zdotw).abs() * T::from(0.2).unwrap();
                         if zdwabs >= acca || acca >= accb {
-                            zdotw = 0.0f64;
+                            zdotw = T::zero();
                         }
                         *vmultd.offset(k as isize) = zdotw / *zdota.offset(k as isize);
                         if !(k >= 2 as libc::c_int) {
@@ -2923,7 +2920,7 @@ unsafe fn trstlp(
                         k -= 1;
                     }
                     if mcon > *m {
-                        d__1 = 0.0f64;
+                        d__1 = T::zero();
                         d__2 = *vmultd.offset(nact as isize);
                         *vmultd.offset(nact as isize) = if d__1 >= d__2 { d__1 } else { d__2 };
                     }
@@ -2952,21 +2949,21 @@ unsafe fn trstlp(
                                 sumabs += (temp).abs();
                                 i__ += 1;
                             }
-                            acca = sumabs + (sum).abs() * 0.1f32 as libc::c_double;
-                            accb = sumabs + (sum).abs() * 0.2f32 as libc::c_double;
+                            acca = sumabs + (sum).abs() * T::from(0.1).unwrap();
+                            accb = sumabs + (sum).abs() * T::from(0.2).unwrap();
                             if sumabs >= acca || acca >= accb {
-                                sum = 0.0f32 as libc::c_double;
+                                sum = T::zero();
                             }
                             *vmultd.offset(k as isize) = sum;
                             k += 1;
                         }
                     }
-                    ratio = 1.0f64;
+                    ratio = T::one();
                     icon = 0 as libc::c_int;
                     i__1 = mcon;
                     k = 1 as libc::c_int;
                     while k <= i__1 {
-                        if *vmultd.offset(k as isize) < 0.0f64 {
+                        if *vmultd.offset(k as isize) < T::zero() {
                             temp = *vmultc.offset(k as isize)
                                 / (*vmultc.offset(k as isize) - *vmultd.offset(k as isize));
                             if temp < ratio {
@@ -2976,7 +2973,7 @@ unsafe fn trstlp(
                         }
                         k += 1;
                     }
-                    temp = 1.0f64 - ratio;
+                    temp = T::one() - ratio;
                     i__1 = *n;
                     i__ = 1 as libc::c_int;
                     while i__ <= i__1 {
@@ -2987,7 +2984,7 @@ unsafe fn trstlp(
                     i__1 = mcon;
                     k = 1 as libc::c_int;
                     while k <= i__1 {
-                        d__1 = 0.0f64;
+                        d__1 = T::zero();
                         d__2 =
                             temp * *vmultc.offset(k as isize) + ratio * *vmultd.offset(k as isize);
                         *vmultc.offset(k as isize) = if d__1 >= d__2 { d__1 } else { d__2 };
